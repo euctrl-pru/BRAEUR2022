@@ -1,0 +1,29 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-07-22'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Reading openavem
+
+```{r}
+download_zip <- "./data-analytic/15062478.zip"
+check_archive <- unzip(zipfile = download_zip, list = TRUE)
+check_archive
+```
+ 
+ Nested zipfile
+ 
+```{r}
+openavem <- unzip(zipfile = check_archive$Name[2], list = TRUE )
+openavem
+```
+
+```{r}
+
+```
+

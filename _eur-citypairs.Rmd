@@ -1,0 +1,43 @@
+---
+title: "European City Pairs"
+output: html_document
+date: '2022-07-13'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+eur_cps <- read_csv("./data-analytic/PBWG-EUR-city-pairs.csv", show_col_types = FALSE) %>% 
+  rename(ADEP = ADEP_ICAO, ADES = ADES_ICAO)
+
+eur_apts <- c("EGLL","EGKK","EHAM","EDDF","EDDM","LSZH","LFPG","LIRF","LEMD","LEBL")
+```
+
+```{r}
+top2  <-  eur_cps %>% 
+  filter(ADEP %in% eur_apts, ADES != ADEP) %>%     #filter(ADES %in% eur_apts) %>% 
+  group_by(YEAR, ADEP) %>% 
+  slice_max(order_by = N, n = 2)
+
+top2
+```
+
+```{r}
+top2 %>% 
+  mutate(PAIR = paste0(ADEP,"-",ADES)
+         ,YEAR = as.factor(YEAR)
+         ) %>% 
+  
+  ggplot(aes(x = YEAR, y = PAIR)) + 
+    geom_line(aes(group = PAIR)) +
+    geom_point(aes(size = N)) +
+    labs(subtitle = "Top 2 aerodrome pairs changed in Europe over the years.") +
+    theme_minimal()
+```
+

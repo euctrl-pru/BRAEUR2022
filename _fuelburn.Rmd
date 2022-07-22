@@ -1,0 +1,311 @@
+---
+title: "Some Initial Gaming with Fuel Burn"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+date: '2022-07-12'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(lubridate)
+library(tidyr)
+```
+
+# Introduction
+
+This document is a quick hack based on an even quicker web research.
+
+There exists a variety of fuel burn estimation approaches, methods, and sources.
+However, recent discussions in bi- or multi-regional benchmarking setups did not support the identification of a "quick and dirty" look-up table to accommodate the conversion of operational inefficiencies into fuel burn.
+
+The following is drafted for discussion and exploration purposes.
+
+# Fuel Burn Estimation
+
+Conceptually, there are 2 major approaches to estimate the fuel burn:
+
+* kinematic energy models - these models are based on addressing thrust/power setting during different flight phases. These models support the estimation of fuel burn (and other emissions) for flight segments. The principal approach is to estimate the fuel burn based on kinematic considerations over the segment. The fundamental input - next to model specific parameters or model processing modules - is a flight trajectory. There are constraints on the openess and accessibility of these models for performance benchmarking purposes.
+* compact flight models = these models typically assume a certain population of flights or flight profiles (e.g. aerodrome pairs). The fuel burn (or other emissions) is then provided on the basis of averages over stages of the flight. Also here no ready to plug and play model has been identified.
+
+A third thread of work revolves around engine certification derived estimates.
+This group of models builds on (partly) openly available data bases from ICAO, i.e. ICAO engine emission data base, ICAO carbon emission calculator.
+The principal approach is here to map the engine certification data to aircraft types and use this as input to so-called payload-range diagrams (~ mapping of the aircraft weight to its associated range). 
+The range based approach serves as a proxy for higher fidelity based trajectory data.
+It must be noted that some of these models tap also into complex emission models to map the payload-range to the associated emissions. 
+
+>>eladenen Flugzeugs ohne Kraftstoff (MZFW), die maximale Reichweite (R) bei voller
+Beladung (also bei MZFW) und die Anzahl der Sitzplätze (SP). Damit ist dann
+Verbrauch = (MTOW – MZFW) / (R . SP) . 100
+Beispiel Airbus A320neo:
+2,2 kg pro 100 km und Sitz = (73500 kg – 62800 kg) / (3180 km . 150) . 100
+
+The latter approach shows some merit for operational performance purposes as it balances the need for trajectory processing (high accuracy in terms of segmentation) with reasonable assumptions over a sub-population of flights.
+This could allow to map additional time indicators with estimates for fuel burn/emissions.
+Some of the work surrounding this area is available openly.
+
+# LTO and CCD
+
+```{r, fig.height=4}
+knitr::include_graphics("./figures/LTO-CCD.png")
+```
+
+Standards for certification of emissions produced by aircraft engines are determined in Volume
+II of Annex 16 of the International Civil Aviation Organization. 
+The Standard focuses on the measurement of carbon monoxide (CO), unburned hydrocarbons (HC), nitro-
+gen oxides (NOX), and smoke. 
+Volume II of Annex 16 also sets a regulatory limit on the concentration of the mentioned emission products during the landing and takeoff cycle (LTO).
+
+The LTO cycle comprises the landing, taxiing, and take-off from/up to an altitude of 3000ft.
+According to the certification process, engines must be tested at various thrust settings representing the operations during the LTO cycle.
+
+The associated data point conventions are
+
+```{r}
+thrust_mode_tbl <- 
+  tibble::tribble(
+    ~"Operating Mode", ~"Engine Thrust (%)", ~"Operating Time (min)"
+    ,"Taxi-out", 7, 7.0
+    ,"Take-off", 100, 0.7
+    ,"Climb-out", 85, 2.2
+    ,"Approach", 30, 4.0
+    ,"Taxi-in", 7, 19
+  )
+
+thrust_mode_tbl %>% flextable::flextable()
+```
+Dependent on the work estimates for the complete LTO cycle are based on the associated "standard" times in the operating mode.
+However, the table enables also to map actual observed movement times to the "standard" thrust setting (as established by ICAO) and derive associated fuel flow/burn estimates.
+
+The aforementioned web search provided the following interesting candidates
+
+* ACERT - Airport carbon and emission reporting tool is an initiative by ACI to support airports in the reporting of Greenhouse Gas Emissions in accordance with the ACI guidance. The latter is also recognised as a means of compliance with other national or international reporting requirements. The ACERT tool contains a pre-processed tab "EF Aircraft" that contains a mapping between aircraft types and fuel flow, i.e. for the taxi phase.
+
+
+
+
+# Fuel Burn Estimation for Performance
+
+## ACERT Taxi-Fuel Estimation
+
+```{r}
+acert <- readxl::read_xlsx("./data-analytic/ACERT_6.0_ACI_Public_build2216.xlsx", sheet = "EF Aircraft", skip = 2)
+
+dplyr::glimpse(acert)
+```
+
+The associated ACERT emission factor table for aircraft provides already a mapping between aircraft type and "typical" engine and the respective fuel burn for a 7% taxi-thrust setting (LTO assumption).
+
+```{r, warning=FALSE}
+# clean and package acert
+# --> more standard column names
+# --> coerce types
+acert <-  acert %>% 
+  rename(
+     AC_TYPE = `Aircraft type`
+    ,NBR_ENG = `#/Eng`
+    ,ENG_TYPE= EngType
+    ,TYPICAL_ENG = `Typical or assigned engine`
+    ,FUEL_LTO = `LTO Fuel (kg/LTO*)` 
+    ,FUEL_TAXI = `Taxi Fuel (kg/min taxi)`
+    ) %>% 
+  mutate( FUEL_LTO = as.numeric(FUEL_LTO)
+         ,FUEL_TAXI= as.numeric(FUEL_TAXI)
+         )
+```
+
+
+For demonstration purposes we quickly map the table to our analytic data:
+
+```{r}
+sbgr_arrs <- readr::read_csv(
+  "./data-analytic/BRA-EUR_SBGR_2019_ARR.csv"
+  ,show_col_types = FALSE
+  ) %>% 
+  mutate(across(.cols = c("AIBT","ALDT"), .fns = ymd_hms)
+         ,TXIT = difftime(AIBT, ALDT, units = "min") %>% as.numeric) %>% 
+  select(ADEP, ADES, FLTID, TYPE, ALDT, AIBT, TXIT)
+sbgr_arrs
+```
+
+To utilise the mapping, we need to recode the aircraft types.     
+Example:
+
+```{r}
+acert2 <- acert %>% 
+  mutate(TYPE = 
+    case_when(
+       AC_TYPE == "Airbus 320" ~ "A320"
+      , TRUE ~ NA_character_
+      )
+    )
+
+acert2 <- acert2 %>% select(AC_TYPE, TYPE, FUEL_TAXI)
+
+acert2 <- acert2 %>% drop_na()
+```
+
+With the lookup table we can map aircraft type/typical engine with our flight-by-flight tables.
+
+CO2 emissions from aviation fuel are 3.15 grams per gram of fuel
+
+```{r}
+tmp <- sbgr_arrs %>% 
+  inner_join(acert2 %>% select(-AC_TYPE), by = "TYPE") %>%
+  mutate(TXIT_FUEL = TXIT * FUEL_TAXI
+         ,TXIT_CO2 = TXIT_FUEL * 3.15)
+
+# show a few rows of our results
+tmp[1:20,] %>% 
+  select(FLTID, TYPE, TXIT, FUEL_TAXI, TXIT_FUEL, TXIT_CO2) %>% 
+  flextable::flextable()
+```
+
+Things to do to make this useful
+
+* prepare lookup table ==> clean aircraft type to standard types, make sure to contain 3.15 or kerosene for multiplication
+* aforementioned example is on the basis of actual taxi times. In analogy, the approach (lookup table) can be applied to the additional times.
+
+
+## 
+
+EMEP/EEA air pollutant emission inventory guidebook 2016
+
+A reasonable estimation of fuel burn for is feasible based on - publicly available - manufacturer data.
+Here the ICAO engine emission data base get relevant.
+
+Based on the payload-range comparison an estimate for the flight can be calculated based on maximum achievable range at the maximum zero fuel weight MZFR.
+
+>A data file for the 2016 version has been downloaded from xxx
+>The macro enabled xslm file is saved as a standard xlsx file. This removed the built in marco-enabled processing of the data.
+The associated data is stored in a (hidden) tab, i.e. "database + table pivot".
+
+```{r}
+xlsx_fn <- "./data-analytic/Aviation_1_Master_Emissions_Calculator_2016.xlsx"
+
+# fix issue with readxl reading in hh::mm as a date
+ct <- c(rep("guess", 12), "text", rep("guess", 25))
+
+emep <- readxl::read_excel(
+  xlsx_fn
+  , sheet = "database + table pivot"
+  #, skip = 2    # experimentation showed we can skip again 2 rows - overwritten by range
+  #,range = readxl::cell_cols(31:68)
+  , range = readxl::anchored("AE3", c(NA, NA))
+  #, col_types = ct
+  )
+
+# ISSUE - CHECK HOW TO FIX TIME CONVERSION!!!!
+
+# the data file appears to be a combination of "forecasted" values 
+# derived from IMPACT
+# useful payload data appears to be listed as of column "AIRCRAFT ID
+emep2 <- emep %>% 
+  select(`AIRCRAFT ID`:`PM 0,1`) %>% 
+  mutate( DURATION = hms::as_hms(DURATION)
+         ,CCD = ifelse(`LTO or CCD` == "CCD", "CCD", NA))
+
+glimpse(emep2)
+```
+
+```{r}
+# clean colnames
+emep2 <- emep2 %>% 
+  rename(
+     TYPE = `IMPACT ACFT ID` 
+    ,ASSOC_MODEL = `One of the models associated with this aircraft type`
+    ,PHASE = `LTO or CCD` 
+    ,DIST  = `DISTANCE NM`
+    ,FUEL  = `FUEL BURNT KG`
+    ,CO2   = `CO2 (3,15 or 3,05)`
+  )
+
+emep_types  <- emep2 %>% distinct(TYPE) %>% pull()
+
+emep_stages <- emep2 %>% distinct(ADES) %>% pull()  # ADES ~ stage length in NM
+```
+
+emep2 %>% readr::write_csv("test.csv")
+
+
+
+supporting airport distance lookup
+
+```{r, eval=FALSE}
+# let's plug in an open airports derived airport file
+apts <- readr::read_csv("../__DATA/airports-20200706.csv") %>% 
+  # filter for proper ICAO location indicators
+  filter(grepl(pattern = "[A-Z]{4}", ident)) %>% 
+  rename(ICAO = ident, LAT = latitude_deg, LON = longitude_deg, ELEV = elevation_ft, CTRY = iso_country, NAME = name) %>% 
+  select(ICAO, LAT, LON, ELEV, CTRY, NAME )
+
+# save out for future use
+readr::write_csv(apts, "./data-analytic/airports_lat_lon.csv")
+```
+
+read in pre-processed airport lat/lon file
+
+```{r}
+apts <- readr::read_csv("./data-analytic/airports_lat_lon.csv")
+
+# helper function to calculate GCD between ADEP and ADES
+calc_GCD <- function(.df, .apts_lat_lon = apts, .keep_lat_lon = FALSE){
+  tmp <- .df %>% 
+    left_join(.apts_lat_lon %>% select(ADEP = ICAO, LAT, LON), by = "ADEP") %>% 
+    left_join(.apts_lat_lon %>% select(ADES = ICAO, LAT2 = LAT, LON2 = LON), by = "ADES") %>% 
+    mutate(
+       GCD = geosphere::distHaversine(cbind(LON, LAT), cbind(LON2, LAT2))
+      ,GCD = GCD / 1852    # convert to NM
+      )
+  if(isFALSE(.keep_lat_lon)) tmp <- tmp %>% select(-c("LAT","LON", "LAT2","LON2"))
+  return(tmp)
+}
+
+
+# helper function to turn GCDs into intervals (aka stage lengths)
+map_dist_to_stage <- function(.df, .stages = emep_stages){
+  # define cuts at midpoint of stages
+  my_cuts <- c(-Inf, .stages[-1] - diff(.stages)/2 , Inf)
+  # apply to GCD
+  tmp <- .df %>% 
+    mutate( STAGE = cut(GCD, breaks = my_cuts, labels = .stages)
+           ,STAGE = STAGE %>% as.character() %>% as.numeric()   # fct --> num
+           )
+  return(tmp)
+}
+```
+
+
+```{r}
+fuel_lookup <- emep2 %>% 
+  filter(PHASE == "CCD") %>% 
+  select(TYPE, STAGE = ADES, TIME_CCD = DURATION, DIST_CCD = DIST, FUEL, CO2)
+
+fuel_lto <- emep2 %>% 
+  filter(PHASE == "LTO") %>% 
+  select(TYPE, STAGE = ADES, TIME_LTO = DURATION, DIST_LTO = DIST, FUEL_LTO = FUEL, CO2_LTO = CO2)
+
+
+trip_fuel <- sbgr_arrs %>% 
+  #mutate(ASMA = )
+  select(ADEP, ADES, TYPE) %>% 
+  calc_GCD() %>% 
+  map_dist_to_stage() %>% 
+  left_join(fuel_lookup) 
+
+
+  left_join(fuel_lto)
+  
+  
+  
+  mutate(FUEL_COR = FUEL * (GCD/STAGE)
+         ,CO2_COR = CO2  * (GCD/STAGE)
+         )  
+
+trip_fuel
+```
+
+

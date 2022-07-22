@@ -1,0 +1,30 @@
+---
+title: "Read OpenAP"
+output: html_document
+date: '2022-07-14'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(yaml)
+```
+
+OpenAP: https://github.com/TUDelft-CNS-ATM/openap/
+
+The aircraft data is located in a project subfolder, i.e. openap/data/aircraft.
+
+openap/data/aircraft/a19n.yml
+
+```{r}
+url <- "https://github.com/TUDelft-CNS-ATM/openap/data/aircraft/"
+
+# check what we have
+acs <- list.files(path = url
+                  #, pattern = "\\.yml"
+                  , full.names = TRUE)
+```
+
+rq <- rvest::read_html(url) %>% rvest::html_nodes("a") %>% rvest::html_text() %>% as_tibble()
+rq %>% filter(grepl(pattern = "\\.yml", x = value))

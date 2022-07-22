@@ -1,0 +1,188 @@
+---
+title: "Fuel Estimation"
+output: html_document
+date: '2022-07-13'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+```
+
+# Model Development
+
+```{r}
+load_data <- function(filename){ #-----------------------------
+  ds <- read_csv2(
+    filename,
+    col_types = cols_only(   # readr allows to speficy "subset" of cols
+       SRC_PHASE  = col_character()
+      ,ADEP_ICAO  = col_character()
+      ,ADES_ICAO  = col_character()
+      ,AP_C_FLTID = col_character()
+      ,AP_C_REG   = col_character()
+      ,AC_CLASS   = col_character()
+      ,ARCTYP     = col_character()
+      ,AP_C_FLTRUL= col_character()
+      ,AP_C_RWY   = col_character()
+      ,AP_C_STND  = col_character()
+      ,C40_BEARING= col_double()
+      ,C40_CROSS_TIME = col_character()
+      ,C100_BEARING   = col_double()
+      ,C100_CROSS_TIME= col_character()
+      ,BLOCK_TIME_UTC = col_character()
+      ,MVT_TIME_UTC   = col_character()
+      ,SCHED_TIME_UTC = col_character()
+    ) # end cols_only specs
+                  )
+  ds <- trim_fact(ds)
+  return(ds)
+} #------------------------------------------------------------
+
+make_analytic_data <- function(.apt, .yr, .fn = NULL){
+  if(is.null(.fn)){
+    fn <- source_filename(.apt, .yr)
+  }else{
+    fn = .fn
+  }
+
+  msg <- paste("\n", .apt, " - ", .yr, " ...", sep = "")
+  warning(msg)
+
+  df <- extract_study_data(.apt, .yr, fn)
+  write_out_study_data(df, .apt, .yr)
+}
+
+source_filename <- function(apt, yr, ftyp="csv"){
+  fn <- paste("../__DATA/", apt, "/", apt, "_", yr, "_FACT."
+              , ftyp , sep = "")
+}
+
+extract_study_data <- function(apt, yr, fn){
+  # ds <- load_data(filename = fn) %>%
+  #   #mutate_each(funs(coerce_timestamp(.)), contains("TIME")) # coerce timestamps
+  #   #dplyr deprecating use of mutate_each
+  #   mutate_at(vars(contains("TIME")), list(~coerce_timestamp(.)))
+
+  .fn <- fn
+  .colspec = cols_only(   # readr allows to speficy "subset" of cols
+     SRC_PHASE  = col_character()
+    ,ADEP_ICAO  = col_character()
+    ,ADES_ICAO  = col_character()
+    ,AP_C_FLTID = col_character()
+    ,AP_C_REG   = col_character()
+    ,AC_CLASS   = col_character()
+    ,ARCTYP     = col_character()
+    ,AP_C_FLTRUL= col_character()
+    ,AP_C_RWY   = col_character()
+    ,AP_C_STND  = col_character()
+    ,C40_BEARING= col_double()
+    ,C40_CROSS_TIME = col_character()
+    ,C100_BEARING   = col_double()
+    ,C100_CROSS_TIME= col_character()
+    ,BLOCK_TIME_UTC = col_character()
+    ,MVT_TIME_UTC   = col_character()
+    ,SCHED_TIME_UTC = col_character()
+  )
+
+  #####  read_csv12 <- function(.fn, .colspec = NULL, ...){
+  # test for csv or csv2
+  tst <- readr::read_csv(.fn, n_max = 3)
+  siz <- dim(tst)[2]   # dim[2] == 1 for semicolon as read_csv expects comma
+
+  # read data files
+  if(siz > 1){
+    df <- readr::read_csv(.fn, col_types = .colspec)
+  }else{
+    df <- readr::read_csv2(.fn, col_types = .colspec)
+  }
+
+  df <- trim_fact(df)
+  return(df)
+}
+
+trim_fact <- function(df){
+  df <- select(df, SRC_PHASE
+               , ADEP  = ADEP_ICAO
+               , ADES  = ADES_ICAO
+               , FLTID = AP_C_FLTID
+               , REG   = AP_C_REG
+               , CLASS = AC_CLASS
+               , TYPE  = ARCTYP
+               , FLTRUL= AP_C_FLTRUL
+               , RWY   = AP_C_RWY
+               , STND  = AP_C_STND
+               , C40_BEARING
+               , C40_TIME = C40_CROSS_TIME
+               , C100_BEARING
+               , C100_TIME = C100_CROSS_TIME
+               , BLOCK_TIME = BLOCK_TIME_UTC
+               , MVT_TIME  = MVT_TIME_UTC
+               , SCHED_TIME = SCHED_TIME_UTC
+  )
+  df$FLTRUL <- substring(df$FLTRUL, 1, 1)
+  return(df)
+}
+
+write_out_study_data <- function(ds, apt, yr){
+  ds %>% pack_arr() %>%
+    write_csv(paste0("./data-analytic/PBWG_", apt, "_", yr, "_ARR.csv"))
+  #                       BRA-EUR
+
+  ds %>% pack_dep() %>%
+    write_csv(paste0("./data-analytic/PBWG_", apt, "_", yr, "_DEP.csv"))
+}
+
+```
+
+Load fuel reference data
+
+```{r}
+#taxi_fuel 
+```
+
+
+
+
+```{r}
+apt = "EDDF"  # study airport
+yr  = 2019    # year of data file
+pth = "D:/__DATA-backup"
+fn <- paste(pth, "/", apt, "/", apt, "_", yr, "_FACT.", "csv", sep = "")
+
+ds <- load_data(fn) %>% 
+  mutate(across(.cols = contains("_TIME"), .fns = lubridate::dmy_hms))
+
+arrs <- ds %>% 
+  filter(SRC_PHASE == "ARR") %>% 
+  mutate(TXIT = difftime(BLOCK_TIME, MVT_TIME, units = "min") %>% as.numeric)
+
+deps <- ds %>% 
+  filter(SRC_PHASE == "DEP") %>% 
+  mutate(TXOT = difftime(MVT_TIME, BLOCK_TIME, units = "min") %>% as.numeric)
+```
+
+```{r}
+txit_refs <- arrs %>% 
+  select(FLTID, RWY, STND, MVT_TIME, BLOCK_TIME, TXIT) %>% 
+  mutate(
+     ICAO = apt
+    ,YEAR = lubridate::year(BLOCK_TIME)) %>% 
+  drop_na() %>% 
+  group_by(ICAO, YEAR, STND, RWY) %>% 
+  summarise(REF_SMPL = n(), REF_TXIT_20P = quantile(TXIT, probs = 0.2), .groups = "drop")
+
+write_csv(txit_refs, paste0("./data-analytic/REF_TXIT_", apt, "_", yr, ".csv"))
+```
+
+```{r}
+txit_refs <- read_csv(paste0("./data-analytic/REF_TXIT_", apt, "_", yr, ".csv"))
+
+arrs %>% left_join(txit_refs, by = c("RWY", "STND")) %>% 
+  select(FLTID, STND, RWY, MVT_TIME, BLOCK_TIME, TXIT, REF = REF_TXIT_20P) %>%
+  mutate(ADD_TXIT = TXIT - REF)
+  
+```
+

@@ -1,0 +1,281 @@
+---
+title: "Extracting ICAO Carbon Calculator Data"
+#output: bookdown::word_document2
+output: bookdown::pdf_document2
+date: "`r format(Sys.time(), '%d %B %Y')`"
+bibliography: bib.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(pdftools)
+
+icc_pdf <- "Methodology-ICAO-Carbon-Calculator_v11-2018.pdf"  # filename
+pth     <- "./data-analytic/"                                 # where stored
+pdf_fn  <- paste0(pth, icc_pdf)
+```
+
+# Overview
+
+Environmental Sustainability has become a priority topic over the past months.
+Within PBWG and the bi-lateral work, discussions revolve around establishing an initial "look-up" table for converting operational inefficiencies to associated fuel burn or CO2 estimates (or other emissions).
+
+Publicly available documentation on fuel burn / emissions is limited.
+ICAO maintains an ICAO Carbon Calculator that enables interested parties to inquire the fuel burn on an aerodrome-pair level.
+The supporting methodology is published in [@icao_carbon_2018].
+
+
+# Understanding Reading pdf files with R
+
+reading in the pdf file
+
+* pdf_text() generates a list of all pages of the pdf file
+
+```{r}
+icc_all <- pdftools::pdf_text(pdf_fn)
+```
+
+convert table page to a machine-readable table
+
+```{r}
+page_17 <- icc_all[17]  # extract page from list
+
+page_17 <- page_17 %>%  
+  read_lines() %>%      # use line breaks
+  as_tibble()           # convert to tibble
+
+page_17
+```
+we can skip the first rows
+
+```{r}
+skip_rows <- 4
+page_17 <- page_17 %>% 
+  filter(row_number() > skip_rows)
+
+page_17
+```
+
+clean string and split columns
+
+```{r}
+# table has IATA Code and then ranges up-to 8500NM
+col_names <- c("CODE","125","250","500","750","1000","1500","2000","2500", "3000", "3500","4000","4500","5000","5500","6000","6500","7000","7500","8000","8500")
+
+page_17 %>% 
+  mutate(
+     value = trimws(value)
+    ,value = gsub(pattern = "\\s+", replacement = "*", x = value)
+    ) %>% 
+  separate(
+    col = value
+    , into = col_names
+    , fill = "right"
+    )
+```
+
+# Extracting ICAO Carbon Calculator Fuel Burn Estimates
+
+## Apendix C
+
+wrap this into a function
+
+```{r}
+col_names <- c("CODE","125","250","500","750","1000","1500","2000","2500", "3000", "3500","4000","4500","5000","5500","6000","6500","7000","7500","8000","8500")
+
+extract_icc_range_table <- function(.pdf_page, .skip_rows = 0, .col_names = col_names){
+  range_table <- .pdf_page %>%
+    read_lines() %>%      # use line breaks
+    as_tibble() %>% 
+    filter(row_number() > skip_rows) %>% 
+    mutate(
+       value = trimws(value)
+      ,value = gsub(pattern = "\\s+", replacement = "*", x = value)
+      ) %>% 
+    separate(
+      col = value
+      , into = col_names
+      , fill = "right"
+      ) %>% 
+    # filter all rows where each range column has no value
+    filter(!if_all(col_names[2]:col_names[length(col_names)], is.na))
+  return(range_table)
+}
+```
+
+ICC document lists fuel consumption tables on page 17 through 23
+
+```{r}
+page_nbrs <-  17:23
+fuel_stages <- page_nbrs %>% 
+  purrr::map_dfr(.f = ~ icc_all[.x] %>% extract_icc_range_table) %>% 
+  filter(CODE != "Code")
+```
+
+write out fuel_stages table for future use
+
+write_csv(fuel_stages, "./data-analytic/ICC-FuelConsumption-v11-2018.csv")
+
+
+## Apendix B - Aircraft Mapping
+
+Follow same logic to read in mapping tables.
+Note that there are multiple Aircraft-Equivalent mappings per page.
+
+```{r}
+extract_aircraft_mappings <- function(.pdf_page){
+  mapping <- .pdf_page %>% 
+    read_lines() %>% 
+    as_tibble() %>% 
+    filter(row_number() > row_number()[grepl("^Aircraft", value)]) %>% 
+    mutate(
+         value = trimws(value)
+        ,value = gsub(pattern = "\\s+", replacement = "*", x = value)
+    ) %>% separate(
+        col = value
+        , into = c("Aircraft","Equivalent","Aircraft_2","Equivalent_2","Aircraft_3","Equivalent_3","Aircraft_4","Equivalent_4")
+        , fill = "right"
+    )
+  tmp1 <- mapping[,1:2]
+  tmp2 <- mapping[,3:4]; names(tmp2) =  c("Aircraft","Equivalent")
+  tmp3 <- mapping[,5:6]; names(tmp3) =  c("Aircraft","Equivalent")
+  tmp4 <- mapping[,7:8]; names(tmp4) =  c("Aircraft","Equivalent")
+  mapping <- bind_rows(tmp1, tmp2, tmp3, tmp4) %>% 
+    # remove any incomplete combination / mapping (e.g. NAs, spurious page number)
+    filter(!if_any(1:2, is.na)) 
+  return(mapping)
+}
+```
+
+```{r}
+page_nbrs <-  14:16
+ac_equi_map <- page_nbrs %>% 
+  purrr::map_dfr(.f = ~ icc_all[.x] %>% extract_aircraft_mappings )
+```
+
+write_csv(fuel_stages, "./data-analytic/ICC-AircraftMapping-v11-2018.csv")
+
+## ICAO Aircraft Type Designator to IATA Type Code Mapping
+
+The ICC documentation uses - unfortunately - IATA Type Codes. 
+Let's hack together a mapping table on top of our handwork for the ACERT look-up.
+
+```{r}
+# get something useful from wikipedia
+library(rvest)
+
+url <- "https://en.wikipedia.org/wiki/List_of_aircraft_type_designators"
+
+wiki_html  <- read_html(url)
+wiki_nodes <- wiki_html %>% 
+  html_nodes(css = "table")
+
+# only one table in nodes, but to be sure we fetch #1
+wiki_tbl   <- wiki_nodes %>% 
+  nth(1) %>% 
+  html_table()
+
+names(wiki_tbl) <- c("ICAO", "IATA", "MODEL")
+```
+
+
+```{r}
+# another source
+url2 <- "https://www.avcodes.co.uk/acrtypes.asp"
+
+avcodes   <- read_html(url2)
+avc_nodes <- avcodes %>% 
+  html_nodes("table")
+avc_tbl   <- avc_nodes %>% first() %>% html_table()
+
+names(avc_tbl) <- c("IATA", "ICAO_AVCodes", "Manufacturer-Type-Model_AVCodes", "WTC")
+```
+
+```{r}
+# another source
+url3 <- "https://stringfixer.com/nl/List_of_aircraft_type_designators"
+
+stringfix  <- read_html(url3)
+sfix_nodes <- stringfix %>% html_nodes("table")
+sfix_tbl   <- sfix_nodes %>% first() %>% html_table()
+
+names(sfix_tbl) <- c("ICAO_sfix", "IATA_sfix", "MODEL_sfix")
+```
+
+combine all - for the time being
+
+```{r}
+rq <-  wiki_tbl %>% left_join(avc_tbl %>% rename(ICAO = ICAO_AVCodes)) %>% left_join(sfix_tbl %>% rename(ICAO = ICAO_sfix))
+```
+write_csv(rq, "./data-analytic/Aircraft-ICAO-IATA-Types.csv")
+
+
+## Augment ICC Fuel Consumption
+
+Appendix B recognises "equivalent" emitting aircraft types.
+Thus, we have to augment the look up to account for these additional aircraft.
+
+```{r}
+fuel_stages2 <- fuel_stages %>% 
+  mutate(VERSION = "ICC-v11-2018 (direct)")
+
+which_equiv <- ac_equi_map %>% 
+  mutate(CHECK = Aircraft != Equivalent) %>% 
+  filter(CHECK == TRUE)
+
+which_equiv <- which_equiv %>% select(-CHECK) %>% 
+  inner_join(fuel_stages %>% rename(Equivalent = CODE)) %>% 
+  mutate(VERSION = paste0("ICC-v11-2018 (equiv: ", Equivalent, ")")) %>% 
+  rename(CODE = Aircraft) 
+
+which_equiv <- which_equiv %>% 
+  filter(CODE != "787")     # double accounting of 787
+
+fuel_stages2 <- bind_rows(fuel_stages2, which_equiv) %>% 
+  rename(IATA = CODE, EQUIVALENT = Equivalent) 
+```
+
+```{r}
+fuel_stages2 <- fuel_stages2 %>% 
+  left_join(avc_tbl %>% rename(ICAO = ICAO_AVCodes))
+fuel_stages2 <- fuel_stages2 %>% select(ICAO, IATA, everything())
+```
+
+```{r}
+missin_icao <- fuel_stages2 %>% 
+  filter(ICAO == "" | is.na(ICAO))
+```
+
+fix by hand - check that we only have unique ICAO !
+
+> missin_icao %>% left_join(sfix_tbl, by = c("IATA"="IATA_sfix")) %>%  select(ICAO_sfix, ICAO, IATA, everything()) %>% filter(!is.na(ICAO_sfix))
+# A tibble: 5 x 28
+  ICAO_sfix ICAO  IATA  `125` `250` `500` `750` `1000` `1500` `2000` `2500` `3000` `3500` `4000` `4500` `5000` `5500`
+  <chr>     <chr> <chr> <chr> <chr> <chr> <chr> <chr>  <chr>  <chr>  <chr>  <chr>  <chr>  <chr>  <chr>  <chr>  <chr> 
+1 A388      NA    388   5851  12016 17623 24940 32211  46695  61160  75638  90143  104681 119255 133865 148512 163196
+2 A321      NA    32B   1909  3925  5270  7157  8970   12456  15818  19094  22308  NA     NA     NA     NA     NA    
+3 A158      NA    A58   1543  3087  4064  5306  6478   NA     NA     NA     NA     NA     NA     NA     NA     NA    
+4 E75L      NA    E7W   1113  2240  2989  3953  4890   6725   NA     NA     NA     NA     NA     NA     NA     NA    
+5 E50P      NA    EP1   290   580   764   997   1218   NA     NA     NA     NA     NA     NA     NA     NA     NA   
+
+write_csv(fuel_stages2, "./data-analytic/ICC-FuelConsumption-v11-2018-augmented.csv")
+
+
+There exists already a A321, E75L.
+Fixed by editing the csv (outside R).
+
+# Conclusion
+
+This document summarises the data preparatory steps for generating a look-up table for PBWG and the bi-regional comparison work.
+It is based on the extraction of fuel burn estimates from the ICAO Carbon Calculator Methodology document, v11 2018.
+
+The data has been extracted from the respective Appendix C.
+With Appendix B, the lookup has been expanded for a set of aircraft types that show - in accordance with the methodology document - similar fuel burn characteristics. 
+
+The comparison work is based on ICAO Aircraft Type Designators [@icao_doc8643_2022].
+
+== initial lookup table!
+
+# References {-}
